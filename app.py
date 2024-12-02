@@ -3,18 +3,17 @@ import pandas as pd
 from client import RestClient
 import os
 
-def process_url(url, client, location_code=2840):
-    """Process a single URL to get keyword data"""
+def process_keywords(keywords, client, location_code=2840):
+    """Process a list of keywords to get search volume data"""
     post_data = dict()
     post_data[len(post_data)] = dict(
         location_code=location_code,  # Default to US
-        target=url,
-        target_type="url",
+        keywords=keywords,
         language_name="English"
     )
     
     try:
-        response = client.post("/v3/keywords_data/google_ads/keywords_for_site/live", post_data)
+        response = client.post("/v3/keywords_data/google_ads/search_volume/live", post_data)
         results = []
         
         if response and isinstance(response, dict):
@@ -26,34 +25,31 @@ def process_url(url, client, location_code=2840):
                         for item in result:
                             if isinstance(item, dict):
                                 results.append({
-                                    "url": url,
                                     "keyword": item.get("keyword", ""),
                                     "search_volume": item.get("search_volume", 0),
                                     "competition": item.get("competition", 0)
                                 })
         
-        if not results:
-            st.warning(f"No keyword data found for URL: {url}")
-            results.append({
-                "url": url,
-                "keyword": "No data found",
-                "search_volume": 0,
-                "competition": 0
-            })
+        # Add keywords that didn't return data
+        processed_keywords = {r["keyword"] for r in results}
+        for keyword in keywords:
+            if keyword not in processed_keywords:
+                results.append({
+                    "keyword": keyword,
+                    "search_volume": 0,
+                    "competition": 0,
+                    "note": "No data found"
+                })
             
         return results
     except Exception as e:
-        st.error(f"Error processing {url}: {str(e)}")
-        return [{
-            "url": url,
-            "keyword": f"Error: {str(e)}",
-            "search_volume": 0,
-            "competition": 0
-        }]
+        st.error(f"Error processing keywords batch: {str(e)}")
+        return [{"keyword": k, "search_volume": 0, "competition": 0, "note": f"Error: {str(e)}"} 
+                for k in keywords]
 
 def main():
     st.title("Keyword Volume Analysis Tool")
-    st.write("Enter your DataForSEO credentials and upload a CSV file containing URLs to analyze their keywords and search volumes.")
+    st.write("Enter your DataForSEO credentials and upload a CSV file containing keywords to analyze their search volumes and competition.")
     
     # DataForSEO credentials input
     with st.sidebar:
@@ -72,23 +68,34 @@ def main():
             try:
                 df = pd.read_csv(uploaded_file)
                 
-                # Get URLs from the first column regardless of its name
-                urls = df.iloc[:, 0].tolist()
+                # Get keywords from the first column regardless of its name
+                keywords = df.iloc[:, 0].tolist()
                 
-                if not urls:
-                    st.error("No URLs found in the first column of the CSV file")
+                if not keywords:
+                    st.error("No keywords found in the first column of the CSV file")
                     return
                 
-                with st.spinner('Processing URLs...'):
+                # Remove any empty or NaN values and strip whitespace
+                keywords = [str(k).strip() for k in keywords if pd.notna(k) and str(k).strip()]
+                
+                if not keywords:
+                    st.error("No valid keywords found in the file")
+                    return
+                
+                st.write(f"Processing {len(keywords)} keywords...")
+                
+                with st.spinner('Getting search volumes...'):
+                    # Process keywords in batches of 100 (API limit)
+                    batch_size = 100
                     all_results = []
                     progress_bar = st.progress(0)
-                    total_urls = len(urls)
+                    total_batches = (len(keywords) + batch_size - 1) // batch_size
                     
-                    for idx, url in enumerate(urls):
-                        if pd.notna(url):  # Skip empty or NaN values
-                            results = process_url(url.strip(), client)  # Strip whitespace
-                            all_results.extend(results)
-                        progress_bar.progress((idx + 1) / total_urls)
+                    for i in range(0, len(keywords), batch_size):
+                        batch = keywords[i:i + batch_size]
+                        results = process_keywords(batch, client)
+                        all_results.extend(results)
+                        progress_bar.progress((i + len(batch)) / len(keywords))
                     
                     if all_results:
                         results_df = pd.DataFrame(all_results)
@@ -105,7 +112,7 @@ def main():
                             key='download-csv'
                         )
                     else:
-                        st.warning("No results found for any of the provided URLs.")
+                        st.warning("No results found for any of the provided keywords.")
                         
             except Exception as e:
                 st.error(f"Error processing file: {str(e)}")
