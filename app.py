@@ -48,7 +48,7 @@ def process_keywords(keywords, client, location_code=2840):
                 for k in keywords]
 
 def main():
-    st.title("Keyword Volume Analysis Tool")
+    st.title("Keyword Search Volume App (Data for SEO")
     st.write("Enter your DataForSEO credentials and upload a CSV file containing keywords to analyze their search volumes and competition.")
     
     # DataForSEO credentials input
