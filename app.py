@@ -17,23 +17,42 @@ def process_url(url, client, location_code=2840):
         response = client.post("/v3/keywords_data/google_ads/keywords_for_site/live", post_data)
         results = []
         
-        if response.get("status_code") == 20000:
-            tasks = response.get("tasks", [])
-            if tasks and "result" in tasks[0]:
-                for item in tasks[0]["result"]:
-                    results.append({
-                        "url": url,
-                        "keyword": item.get("keyword"),
-                        "search_volume": item.get("search_volume", 0),
-                        "competition": item.get("competition", 0)
-                    })
+        if response and isinstance(response, dict):
+            if response.get("status_code") == 20000:
+                tasks = response.get("tasks", [])
+                if tasks and isinstance(tasks, list) and len(tasks) > 0:
+                    result = tasks[0].get("result", [])
+                    if isinstance(result, list):
+                        for item in result:
+                            if isinstance(item, dict):
+                                results.append({
+                                    "url": url,
+                                    "keyword": item.get("keyword", ""),
+                                    "search_volume": item.get("search_volume", 0),
+                                    "competition": item.get("competition", 0)
+                                })
+        
+        if not results:
+            st.warning(f"No keyword data found for URL: {url}")
+            results.append({
+                "url": url,
+                "keyword": "No data found",
+                "search_volume": 0,
+                "competition": 0
+            })
+            
         return results
     except Exception as e:
         st.error(f"Error processing {url}: {str(e)}")
-        return []
+        return [{
+            "url": url,
+            "keyword": f"Error: {str(e)}",
+            "search_volume": 0,
+            "competition": 0
+        }]
 
 def main():
-    st.title("Keyword Search Volume Retrieval App")
+    st.title("Keyword Volume Analysis Tool")
     st.write("Enter your DataForSEO credentials and upload a CSV file containing URLs to analyze their keywords and search volumes.")
     
     # DataForSEO credentials input
@@ -53,20 +72,23 @@ def main():
             try:
                 df = pd.read_csv(uploaded_file)
                 
-                if 'url' not in df.columns:
-                    st.error("CSV file must contain a 'url' column")
-                    return
+                # Get URLs from the first column regardless of its name
+                urls = df.iloc[:, 0].tolist()
                 
-                urls = df['url'].tolist()
+                if not urls:
+                    st.error("No URLs found in the first column of the CSV file")
+                    return
                 
                 with st.spinner('Processing URLs...'):
                     all_results = []
                     progress_bar = st.progress(0)
+                    total_urls = len(urls)
                     
                     for idx, url in enumerate(urls):
-                        results = process_url(url, client)
-                        all_results.extend(results)
-                        progress_bar.progress((idx + 1) / len(urls))
+                        if pd.notna(url):  # Skip empty or NaN values
+                            results = process_url(url.strip(), client)  # Strip whitespace
+                            all_results.extend(results)
+                        progress_bar.progress((idx + 1) / total_urls)
                     
                     if all_results:
                         results_df = pd.DataFrame(all_results)
@@ -83,7 +105,7 @@ def main():
                             key='download-csv'
                         )
                     else:
-                        st.warning("No results found for the provided URLs.")
+                        st.warning("No results found for any of the provided URLs.")
                         
             except Exception as e:
                 st.error(f"Error processing file: {str(e)}")
