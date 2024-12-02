@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from dataforseo_client import RestClient
+from client import RestClient
 import os
 from dotenv import load_dotenv
 
