@@ -2,15 +2,8 @@ import streamlit as st
 import pandas as pd
 from client import RestClient
 import os
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
-
-# Initialize API client with your DataForSEO credentials
-client = RestClient(os.getenv('DATAFORSEO_LOGIN'), os.getenv('DATAFORSEO_PASSWORD'))
-
-def process_url(url, location_code=2840):
+def process_url(url, client, location_code=2840):
     """Process a single URL to get keyword data"""
     post_data = dict()
     post_data[len(post_data)] = dict(
@@ -40,49 +33,62 @@ def process_url(url, location_code=2840):
         return []
 
 def main():
-    st.title("Keyword Volume Analysis Tool")
-    st.write("Upload a CSV file containing URLs to analyze their keywords and search volumes.")
+    st.title("Keyword Search Volume Retrieval App")
+    st.write("Enter your DataForSEO credentials and upload a CSV file containing URLs to analyze their keywords and search volumes.")
     
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    # DataForSEO credentials input
+    with st.sidebar:
+        st.header("DataForSEO Credentials")
+        dataforseo_login = st.text_input("DataForSEO Login", type="default")
+        dataforseo_password = st.text_input("DataForSEO Password", type="password")
     
-    if uploaded_file:
-        try:
-            df = pd.read_csv(uploaded_file)
-            
-            if 'url' not in df.columns:
-                st.error("CSV file must contain a 'url' column")
-                return
-            
-            urls = df['url'].tolist()
-            
-            with st.spinner('Processing URLs...'):
-                all_results = []
-                progress_bar = st.progress(0)
+    # Only show file uploader if credentials are provided
+    if dataforseo_login and dataforseo_password:
+        # Initialize client with provided credentials
+        client = RestClient(dataforseo_login, dataforseo_password)
+        
+        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+        
+        if uploaded_file:
+            try:
+                df = pd.read_csv(uploaded_file)
                 
-                for idx, url in enumerate(urls):
-                    results = process_url(url)
-                    all_results.extend(results)
-                    progress_bar.progress((idx + 1) / len(urls))
+                if 'url' not in df.columns:
+                    st.error("CSV file must contain a 'url' column")
+                    return
                 
-                if all_results:
-                    results_df = pd.DataFrame(all_results)
+                urls = df['url'].tolist()
+                
+                with st.spinner('Processing URLs...'):
+                    all_results = []
+                    progress_bar = st.progress(0)
                     
-                    st.write("### Results")
-                    st.dataframe(results_df)
+                    for idx, url in enumerate(urls):
+                        results = process_url(url, client)
+                        all_results.extend(results)
+                        progress_bar.progress((idx + 1) / len(urls))
                     
-                    csv = results_df.to_csv(index=False)
-                    st.download_button(
-                        "Download Results",
-                        csv,
-                        "keyword_analysis_results.csv",
-                        "text/csv",
-                        key='download-csv'
-                    )
-                else:
-                    st.warning("No results found for the provided URLs.")
-                    
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
+                    if all_results:
+                        results_df = pd.DataFrame(all_results)
+                        
+                        st.write("### Results")
+                        st.dataframe(results_df)
+                        
+                        csv = results_df.to_csv(index=False)
+                        st.download_button(
+                            "Download Results",
+                            csv,
+                            "keyword_analysis_results.csv",
+                            "text/csv",
+                            key='download-csv'
+                        )
+                    else:
+                        st.warning("No results found for the provided URLs.")
+                        
+            except Exception as e:
+                st.error(f"Error processing file: {str(e)}")
+    else:
+        st.info("Please enter your DataForSEO credentials in the sidebar to proceed.")
 
 if __name__ == "__main__":
     main()
