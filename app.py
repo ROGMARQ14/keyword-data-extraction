@@ -4,6 +4,8 @@ from client import RestClient
 import os
 import time
 from dotenv import load_dotenv, find_dotenv
+import logging
+import re
 
 # Load environment variables from .env file
 env_file = find_dotenv(usecwd=True)
@@ -12,6 +14,20 @@ if env_file:
     env_loaded = True
 else:
     env_loaded = False
+
+def clean_keyword(keyword):
+    """
+    Clean a keyword string by removing invalid characters
+    that might cause the DataForSEO API to reject it
+    """
+    import re
+    # Remove special characters that are likely to cause API issues
+    # Keep spaces, letters, numbers, and basic punctuation
+    cleaned = re.sub(r'[^\w\s\-.,?!&\'"]', ' ', str(keyword))
+    # Replace multiple spaces with a single space
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    # Trim whitespace
+    return cleaned.strip()
 
 def submit_keywords_task(keywords, client, location_code=2840, postback_url=None):
     """Submit a task to process a list of keywords to get search volume data"""
@@ -35,22 +51,25 @@ def submit_keywords_task(keywords, client, location_code=2840, postback_url=None
         # Make sure we're using the correct endpoint path format with leading slash
         response = client.post("/v3/keywords_data/google_ads/search_volume/task_post", post_data)
         
-        # Log the entire response for debugging
-        st.write("DEBUG - API Response:", response)
-        
+        # Log errors to application log but don't display in the UI
         if response and isinstance(response, dict):
             if response.get("status_code") == 20000:
                 tasks = response.get("tasks", [])
                 if tasks and isinstance(tasks, list) and len(tasks) > 0:
-                    task_id = tasks[0].get("id")
+                    task = tasks[0]
+                    if task.get("status_code") != 20000:
+                        logging.error(f"Task submission error: {task.get('status_message')}")
+                    task_id = task.get("id")
                     return task_id
             else:
                 status_code = response.get("status_code")
                 status_message = response.get("status_message", "Unknown error")
+                logging.error(f"API Error {status_code}: {status_message}")
                 st.error(f"API Error {status_code}: {status_message}")
         
         return None
     except Exception as e:
+        logging.error(f"Error submitting keywords task: {str(e)}")
         st.error(f"Error submitting keywords task: {str(e)}")
         return None
 
@@ -60,11 +79,11 @@ def get_task_results(task_id, client):
         # Make sure we're using the correct endpoint path format with leading slash
         response = client.get(f"/v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
         
-        # Log the full response for debugging
-        st.write("DEBUG - Task Result Response:", response)
+        # Log to application log but don't display in UI
+        logging.debug(f"Task Result Response for {task_id}: {response}")
         
         if not response or not isinstance(response, dict):
-            st.error(f"Invalid response format: {response}")
+            logging.error(f"Invalid response format: {response}")
             return None
         
         # Check the status code
@@ -74,20 +93,20 @@ def get_task_results(task_id, client):
             # Task is completed successfully
             tasks = response.get("tasks", [])
             if not tasks or not isinstance(tasks, list) or len(tasks) == 0:
-                st.error("No tasks found in response")
+                logging.error("No tasks found in response")
                 return None
             
             task = tasks[0]
             if task.get("status_code") != 20000:
                 task_status = task.get("status_code")
                 task_message = task.get("status_message", "Unknown task error")
-                st.error(f"Task Error {task_status}: {task_message}")
+                logging.error(f"Task Error {task_status}: {task_message}")
                 return None
             
             # Get the result from the task
             result = task.get("result", [])
             if not result or not isinstance(result, list) or len(result) == 0:
-                st.info(f"No results found for task {task_id}")
+                logging.info(f"No results found for task {task_id}")
                 return []
             
             # Extract and format the keyword data
@@ -112,61 +131,12 @@ def get_task_results(task_id, client):
         else:
             # Task failed or other error
             status_message = response.get("status_message", "Unknown error")
-            st.error(f"API Error {status_code}: {status_message}")
+            logging.error(f"API Error {status_code}: {status_message}")
             return None
             
     except Exception as e:
-        st.error(f"Error getting task results: {str(e)}")
+        logging.error(f"Error getting task results: {str(e)}")
         return None
-
-def process_keywords(keywords, client, location_code=2840):
-    """Process a list of keywords using the DataForSEO API
-    
-    This function submits a task to the API and polls for results.
-    """
-    # Make a direct API call for test purposes to validate the API connection
-    try:
-        # Make a simple API call to test the connection
-        test_response = client.get("/v3/keywords_data/google_ads/search_volume/live", None)
-        st.write("API Connection Test:")
-        st.json(test_response)
-    except Exception as e:
-        st.error(f"API Connection Test Failed: {str(e)}")
-    
-    # Submit task with a smaller batch for testing
-    test_keywords = keywords[:5] if len(keywords) > 5 else keywords
-    task_id = submit_keywords_task(test_keywords, client, location_code)
-    
-    if not task_id:
-        st.error("Failed to submit task. Please check your credentials and try again.")
-        return []
-    
-    st.success(f"Test task submitted successfully. Task ID: {task_id}")
-    
-    # Poll for results
-    max_attempts = 30
-    attempt = 0
-    
-    while attempt < max_attempts:
-        attempt += 1
-        st.write(f"Polling for results (attempt {attempt}/{max_attempts})...")
-        
-        results = get_task_results(task_id, client)
-        
-        if results == "in_progress":
-            st.info(f"Task still in progress. Waiting for 5 seconds...")
-            time.sleep(5)
-            continue
-        
-        if results:
-            st.success(f"Received {len(results)} results!")
-            return results
-        else:
-            st.error("Failed to get results. Please try again.")
-            return []
-    
-    st.error(f"Task did not complete within {max_attempts} polling attempts.")
-    return []
 
 def process_large_keyword_list(keywords, client, status_container, results_container, progress_bar):
     """Process a large list of keywords efficiently by submitting multiple tasks in parallel
@@ -197,8 +167,11 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
             batch = keywords[i:i + batch_size]
             batch_num = i // batch_size + 1
             
+            # Clean each keyword to remove invalid characters
+            cleaned_batch = [clean_keyword(k) for k in batch]
+            
             st.text(f"Submitting batch {batch_num}/{total_batches} ({len(batch)} keywords)...")
-            task_id = submit_keywords_task(batch, client)
+            task_id = submit_keywords_task(cleaned_batch, client)
             
             if task_id:
                 task_ids.append((task_id, batch, batch_num))
@@ -355,6 +328,56 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
             progress_bar.progress(completed_batches / total_batches)
     
     return all_results
+
+def process_keywords(keywords, client, location_code=2840):
+    """Process a list of keywords and return search volume data"""
+    results = []
+    
+    # Clean the keywords
+    cleaned_keywords = [clean_keyword(k) for k in keywords]
+    
+    # Submit the task
+    task_id = submit_keywords_task(cleaned_keywords, client, location_code)
+    
+    if not task_id:
+        st.error("Failed to submit the task")
+        return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Failed to submit task"} for k in keywords]
+    
+    # Poll for results
+    max_attempts = 60
+    poll_interval = 2
+    
+    for attempt in range(max_attempts):
+        st.text(f"Checking results (attempt {attempt + 1}/{max_attempts})...")
+        time.sleep(poll_interval)
+        
+        results = get_task_results(task_id, client)
+        
+        if results == "in_progress":
+            continue
+        
+        if results:
+            # Got results, now make sure we have data for all keywords
+            processed_keywords = {r["keyword"] for r in results}
+            
+            # Add missing keywords with zero values
+            for keyword in keywords:
+                if keyword not in processed_keywords:
+                    results.append({
+                        "keyword": keyword,
+                        "search_volume": 0,
+                        "competition": 0,
+                        "note": "No data found"
+                    })
+            
+            return results
+        
+        # No results but not in progress - error or empty response
+        break
+    
+    # If we get here, we didn't get any results after all attempts
+    st.error(f"Failed to get results after {max_attempts} attempts")
+    return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Timeout or no data"} for k in keywords]
 
 def main():
     st.title("Keyword Volume Analysis Tool")
@@ -529,10 +552,13 @@ def main():
                             batch = keywords[i:i + batch_size_to_use]
                             batch_num = i // batch_size_to_use + 1
                             
+                            # Clean the keywords
+                            cleaned_batch = [clean_keyword(k) for k in batch]
+                            
                             st.text(f"Submitting batch {batch_num}/{(len(keywords) + batch_size_to_use - 1) // batch_size_to_use} ({len(batch)} keywords)...")
                             
                             # Submit with callback URL
-                            task_id = submit_keywords_task(batch, client, postback_url=current_callback_url)
+                            task_id = submit_keywords_task(cleaned_batch, client, postback_url=current_callback_url)
                             
                             if task_id:
                                 task_ids.append(task_id)
