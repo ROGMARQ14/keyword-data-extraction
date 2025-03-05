@@ -63,38 +63,64 @@ def get_task_results(task_id, client):
                 tasks = response.get("tasks", [])
                 if tasks and len(tasks) > 0:
                     task = tasks[0]
+                    task_status = task.get("status_code")
                     
                     # Check if the task is still in progress
-                    if task.get("status_code") == 20100:
+                    if task_status == 40401:  # DataForSEO task in progress code
                         return "in_progress"
                     
-                    # If task is completed, extract results
-                    if task.get("status_code") == 20000:
+                    # If task is completed successfully
+                    if task_status == 20000:
                         result = task.get("result", [])
+                        
+                        # Detailed logging for debugging
+                        st.write(f"Raw result structure received for task {task_id}:")
+                        st.json(result)
                         
                         # Process results into a simple format
                         processed_results = []
                         
-                        for item in result:
-                            items = item.get("items", [])
-                            for keyword_data in items:
-                                keyword = keyword_data.get("keyword")
-                                search_volume = keyword_data.get("search_volume", 0)
-                                competition = keyword_data.get("competition_index", 0)
-                                
-                                processed_results.append({
-                                    "keyword": keyword,
-                                    "search_volume": search_volume,
-                                    "competition": competition,
-                                    "note": ""
-                                })
-                                
-                        return processed_results
+                        if result:
+                            for item in result:
+                                # The correct path for keyword data in the DataForSEO API response
+                                if "items" in item:
+                                    for keyword_data in item.get("items", []):
+                                        keyword = keyword_data.get("keyword")
+                                        search_volume = keyword_data.get("search_volume", 0)
+                                        # Try multiple paths for competition data
+                                        competition = (
+                                            keyword_data.get("competition_index", 0) or 
+                                            keyword_data.get("competition", 0)
+                                        )
+                                        
+                                        processed_results.append({
+                                            "keyword": keyword,
+                                            "search_volume": search_volume,
+                                            "competition": competition,
+                                            "note": ""
+                                        })
+                                else:
+                                    # Some results might have a different structure
+                                    keyword = item.get("keyword")
+                                    if keyword:
+                                        search_volume = item.get("search_volume", 0)
+                                        competition = (
+                                            item.get("competition_index", 0) or 
+                                            item.get("competition", 0)
+                                        )
+                                        
+                                        processed_results.append({
+                                            "keyword": keyword,
+                                            "search_volume": search_volume,
+                                            "competition": competition,
+                                            "note": ""
+                                        })
+                        
+                        return processed_results if processed_results else None
                     
-                    # If no results found
-                    if task.get("status_code") != 20000:
-                        st.error(f"Error in task: {task.get('status_message', 'Unknown error')}")
-                        return None
+                    # If task failed or has other status
+                    st.error(f"Task error: Status {task_status} - {task.get('status_message', 'No message')}")
+                    return None
             elif status_code == 40602:  # Task not found or no longer available
                 st.error(f"Task not found: {response.get('status_message', 'Task ID not found')}")
                 return None
@@ -161,7 +187,7 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
     and aggregating results as they become available."""
     
     # Determine optimal batch size
-    batch_size = 1000  # Maximum supported by the API
+    batch_size = 500  # Fixed batch size
     
     # Calculate number of batches
     total_batches = (len(keywords) + batch_size - 1) // batch_size
@@ -278,7 +304,7 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
                         batch_status = f"Batch {batch_num} completed: {len(results)} results"
                         batch_status_containers[batch_num-1].success(batch_status)
                     else:
-                        # Handle failed task
+                        # Handle failed task - always include all keywords even if the task failed
                         failed_results = [{"keyword": k, "search_volume": 0, "competition": 0, 
                                         "note": "Task failed to return results"} for k in batch]
                         all_results.extend(failed_results)
@@ -307,8 +333,18 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
                             st.dataframe(temp_df.head(20))  # Show first 20 rows
                 except Exception as e:
                     st.error(f"Error checking task {task_id} for batch {batch_num}: {str(e)}")
-                    # Keep the task in the pending list to try again
-                    still_pending.append((task_id, batch, batch_num))
+                    # If we're on the last attempt, mark this batch as failed
+                    if attempt >= max_attempts - 1:
+                        failed_results = [{"keyword": k, "search_volume": 0, "competition": 0, 
+                                        "note": f"Error: {str(e)}"} for k in batch]
+                        all_results.extend(failed_results)
+                        batch_status = f"Batch {batch_num} failed with error: {str(e)}"
+                        batch_status_containers[batch_num-1].error(batch_status)
+                        completed_batches += 1
+                        progress_bar.progress(completed_batches / total_batches)
+                    else:
+                        # Otherwise, keep trying
+                        still_pending.append((task_id, batch, batch_num))
             
             # Update pending tasks
             pending_tasks = still_pending
@@ -316,21 +352,21 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
             # If there are still pending tasks, wait before next polling attempt
             if pending_tasks:
                 time.sleep(current_interval)
+    
+    # Handle any remaining pending tasks as timeouts
+    if pending_tasks:
+        status_container.warning(f"Some batches did not complete within the allotted time. Returning partial results.")
         
-        # Handle any remaining pending tasks as timeouts
-        if pending_tasks:
-            status_container.warning(f"Some batches did not complete within the allotted time. Returning partial results.")
+        for task_id, batch, batch_num in pending_tasks:
+            timeout_results = [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Task timeout - processing took too long"} 
+                            for k in batch]
+            all_results.extend(timeout_results)
+            batch_status = f"Batch {batch_num} timed out after {max_attempts} attempts"
+            batch_status_containers[batch_num-1].warning(batch_status)
             
-            for task_id, batch, batch_num in pending_tasks:
-                timeout_results = [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Task timeout - processing took too long"} 
-                                for k in batch]
-                all_results.extend(timeout_results)
-                batch_status = f"Batch {batch_num} timed out after {max_attempts} attempts"
-                batch_status_containers[batch_num-1].warning(batch_status)
-                
-                # Update progress for timed out batches
-                completed_batches += 1
-                progress_bar.progress(completed_batches / total_batches)
+            # Update progress for timed out batches
+            completed_batches += 1
+            progress_bar.progress(completed_batches / total_batches)
     
     return all_results
 
@@ -351,6 +387,8 @@ def main():
         # Add advanced settings
         st.header("Advanced Settings")
         use_optimized_mode = st.checkbox("Use Optimized Mode for Large Keyword Lists", value=True)
+        batch_size = st.slider("Batch Size", min_value=100, max_value=1000, value=500, step=100, 
+                            help="Number of keywords to process in each batch")
         use_callbacks = st.checkbox("Use Callbacks (Requires Public URL)", value=False)
         
         if use_callbacks:
@@ -421,13 +459,13 @@ def main():
             ```python
             @app.route('/api/dataforseo-callback', methods=['POST'])
             def dataforseo_callback():
-                # Get the data from the request
+                // Get the data from the request
                 data = request.json
                 
-                # Process the data (store in database, etc.)
-                # ...
+                // Process the data (store in database, etc.)
+                // ...
                 
-                # Return a success response
+                // Return a success response
                 return 'OK', 200
             ```
             """)
@@ -498,14 +536,14 @@ def main():
                         """)
                         
                         # Process keywords in batches
-                        batch_size = 1000  # Maximum supported by the API
+                        batch_size_to_use = batch_size  # Use the user-selected batch size
                         task_ids = []
                         
-                        for i in range(0, len(keywords), batch_size):
-                            batch = keywords[i:i + batch_size]
-                            batch_num = i // batch_size + 1
+                        for i in range(0, len(keywords), batch_size_to_use):
+                            batch = keywords[i:i + batch_size_to_use]
+                            batch_num = i // batch_size_to_use + 1
                             
-                            st.text(f"Submitting batch {batch_num}/{total_batches} ({len(batch)} keywords)...")
+                            st.text(f"Submitting batch {batch_num}/{(len(keywords) + batch_size_to_use - 1) // batch_size_to_use} ({len(batch)} keywords)...")
                             
                             # Submit with callback URL
                             task_id = submit_keywords_task(batch, client, postback_url=current_callback_url)
@@ -514,7 +552,7 @@ def main():
                                 task_ids.append(task_id)
                                 st.success(f"Batch {batch_num} submitted successfully. Task ID: {task_id}")
                                 # Update progress
-                                progress_bar.progress(batch_num / ((len(keywords) + batch_size - 1) // batch_size))
+                                progress_bar.progress(batch_num / ((len(keywords) + batch_size_to_use - 1) // batch_size_to_use))
                             else:
                                 st.error(f"Failed to submit batch {batch_num}")
                         
@@ -539,14 +577,14 @@ def main():
                     # Use the original processing method for smaller lists
                     with st.spinner('Getting search volumes...'):
                         # Process keywords in batches
-                        batch_size = min(1000, len(keywords))  # Use up to 1000 keywords per batch
+                        batch_size_to_use = min(batch_size, len(keywords))  # Use the user-selected batch size
                         all_results = []
                         
-                        total_batches = (len(keywords) + batch_size - 1) // batch_size
+                        total_batches = (len(keywords) + batch_size_to_use - 1) // batch_size_to_use
                         
-                        for i in range(0, len(keywords), batch_size):
-                            batch = keywords[i:i + batch_size]
-                            batch_num = i // batch_size + 1
+                        for i in range(0, len(keywords), batch_size_to_use):
+                            batch = keywords[i:i + batch_size_to_use]
+                            batch_num = i // batch_size_to_use + 1
                             
                             status_container.text(f"Processing batch {batch_num}/{total_batches} ({len(batch)} keywords)...")
                             results = process_keywords(batch, client)
