@@ -17,25 +17,31 @@ class RestClient:
         """Initialize the client with username and password"""
         self.username = username
         self.password = password
+        # Ensure base_url doesn't have trailing slash
         self.base_url = "https://api.dataforseo.com"
         logger.info(f"RestClient initialized with username: {username}")
 
     def post(self, path, data):
         """Make a POST request to the API"""
+        # Ensure path has leading slash per DataForSEO examples
+        if not path.startswith('/'):
+            path = '/' + path
+            
         logger.info(f"Making POST request to path: {path}")
         return self.request(path, data, "POST")
 
     def get(self, path, data=None):
         """Make a GET request to the API"""
+        # Ensure path has leading slash per DataForSEO examples
+        if not path.startswith('/'):
+            path = '/' + path
+            
         logger.info(f"Making GET request to path: {path}")
         return self.request(path, data, "GET")
 
     def request(self, path, data=None, method="GET"):
         """Make a request to the API"""
-        # Ensure path starts with a slash but remove any leading slashes from path to avoid double slashes
-        if not path.startswith('/'):
-            path = '/' + path
-        
+        # Path should already have leading slash from post/get methods
         url = f"{self.base_url}{path}"
         logger.info(f"Making {method} request to URL: {url}")
         
@@ -67,7 +73,17 @@ class RestClient:
             response.raise_for_status()
             
             response_json = response.json()
-            logger.info(f"Response JSON: {json.dumps(response_json, indent=2)}")
+            
+            # Log a shortened version of the response to avoid overwhelming logs
+            if isinstance(response_json, dict):
+                status_info = {
+                    "status_code": response_json.get("status_code"),
+                    "status_message": response_json.get("status_message"),
+                    "tasks_count": len(response_json.get("tasks", [])),
+                }
+                logger.info(f"Response summary: {json.dumps(status_info, indent=2)}")
+            else:
+                logger.info(f"Response not in expected format: {type(response_json)}")
             
             return response_json
             
