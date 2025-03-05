@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 from client import RestClient
 import os
+import time
 
-def process_keywords(keywords, client, location_code=2840):
-    """Process a list of keywords to get search volume data"""
+def submit_keywords_task(keywords, client, location_code=2840):
+    """Submit a task to process a list of keywords to get search volume data"""
     post_data = dict()
     post_data[len(post_data)] = dict(
         location_code=location_code,  # Default to US
@@ -13,42 +14,104 @@ def process_keywords(keywords, client, location_code=2840):
     )
     
     try:
-        response = client.post("/v3/keywords_data/google_ads/search_volume/live", post_data)
+        # Changed endpoint from 'live' to 'task_post'
+        response = client.post("/v3/keywords_data/google_ads/search_volume/task_post", post_data)
+        
+        if response and isinstance(response, dict):
+            if response.get("status_code") == 20000:
+                tasks = response.get("tasks", [])
+                if tasks and isinstance(tasks, list) and len(tasks) > 0:
+                    task_id = tasks[0].get("id")
+                    return task_id
+        
+        st.error(f"Failed to submit task: {response.get('status_message', 'Unknown error')}")
+        return None
+    except Exception as e:
+        st.error(f"Error submitting keywords task: {str(e)}")
+        return None
+
+def get_task_results(task_id, client):
+    """Get the results of a previously submitted task"""
+    if not task_id:
+        return []
+    
+    try:
+        # Get task results using the task_get endpoint
+        response = client.get(f"/v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
         results = []
         
         if response and isinstance(response, dict):
             if response.get("status_code") == 20000:
                 tasks = response.get("tasks", [])
                 if tasks and isinstance(tasks, list) and len(tasks) > 0:
-                    result = tasks[0].get("result", [])
-                    if isinstance(result, list):
-                        for item in result:
-                            if isinstance(item, dict):
-                                results.append({
-                                    "keyword": item.get("keyword", ""),
-                                    "search_volume": item.get("search_volume", 0),
-                                    "competition": item.get("competition", 0)
-                                })
+                    task = tasks[0]
+                    status = task.get("status_code")
+                    
+                    # Check if task is still in progress
+                    if status == 40401:  # Task in progress
+                        return "in_progress"
+                        
+                    # Check if task is completed
+                    if status == 20000:
+                        result = task.get("result", [])
+                        if isinstance(result, list):
+                            for item in result:
+                                if isinstance(item, dict):
+                                    results.append({
+                                        "keyword": item.get("keyword", ""),
+                                        "search_volume": item.get("search_volume", 0),
+                                        "competition": item.get("competition", 0)
+                                    })
         
-        # Add keywords that didn't return data
-        processed_keywords = {r["keyword"] for r in results}
-        for keyword in keywords:
-            if keyword not in processed_keywords:
-                results.append({
-                    "keyword": keyword,
-                    "search_volume": 0,
-                    "competition": 0,
-                    "note": "No data found"
-                })
-            
         return results
     except Exception as e:
-        st.error(f"Error processing keywords batch: {str(e)}")
-        return [{"keyword": k, "search_volume": 0, "competition": 0, "note": f"Error: {str(e)}"} 
+        st.error(f"Error getting task results: {str(e)}")
+        return []
+
+def process_keywords(keywords, client, location_code=2840):
+    """Process a list of keywords to get search volume data using task-based approach"""
+    # Submit task
+    task_id = submit_keywords_task(keywords, client, location_code)
+    
+    if not task_id:
+        return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Failed to submit task"} 
                 for k in keywords]
+    
+    # Poll for results
+    max_attempts = 30  # Maximum number of attempts to check task status
+    poll_interval = 2  # Time in seconds between status checks
+    
+    for attempt in range(max_attempts):
+        results = get_task_results(task_id, client)
+        
+        # If task is still in progress, wait and try again
+        if results == "in_progress":
+            # Show progress message with attempt count
+            st.text(f"Task in progress, polling attempt {attempt+1}/{max_attempts}...")
+            time.sleep(poll_interval)
+            continue
+        
+        # If we have results, return them
+        if results:
+            # Add keywords that didn't return data
+            processed_keywords = {r["keyword"] for r in results}
+            for keyword in keywords:
+                if keyword not in processed_keywords:
+                    results.append({
+                        "keyword": keyword,
+                        "search_volume": 0,
+                        "competition": 0,
+                        "note": "No data found"
+                    })
+            return results
+    
+    # If we've exhausted our attempts, return error
+    st.error(f"Task did not complete after {max_attempts} polling attempts")
+    return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Task timeout"} 
+            for k in keywords]
 
 def main():
-    st.title("Keyword Search Volume App (Data for SEO")
+    st.title("Keyword Volume Analysis Tool")
     st.write("Enter your DataForSEO credentials and upload a CSV file containing keywords to analyze their search volumes and competition.")
     
     # DataForSEO credentials input
