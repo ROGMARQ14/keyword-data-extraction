@@ -19,7 +19,7 @@ def submit_keywords_task(keywords, client, location_code=2840, postback_url=None
     
     # Create task data with optional postback URL
     task_data = dict(
-        location_code=location_code,  # Default to US
+        location_code=location_code,  # Default to US (2840)
         keywords=keywords,
         language_name="English"
     )
@@ -28,11 +28,15 @@ def submit_keywords_task(keywords, client, location_code=2840, postback_url=None
     if postback_url:
         task_data["postback_url"] = postback_url
     
+    # Add to post_data using length as key (exactly as in their example)
     post_data[len(post_data)] = task_data
     
     try:
-        # Changed endpoint from 'live' to 'task_post'
-        response = client.post("v3/keywords_data/google_ads/search_volume/task_post", post_data)
+        # Make sure we're using the correct endpoint path format with leading slash
+        response = client.post("/v3/keywords_data/google_ads/search_volume/task_post", post_data)
+        
+        # Log the entire response for debugging
+        st.write("DEBUG - API Response:", response)
         
         if response and isinstance(response, dict):
             if response.get("status_code") == 20000:
@@ -51,86 +55,68 @@ def submit_keywords_task(keywords, client, location_code=2840, postback_url=None
         return None
 
 def get_task_results(task_id, client):
-    """Get results for a submitted task"""
+    """Get the results of a task"""
     try:
-        # Use the task_get endpoint to check task status and get results
-        response = client.get(f"v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
+        # Make sure we're using the correct endpoint path format with leading slash
+        response = client.get(f"/v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
         
-        if response and isinstance(response, dict):
-            status_code = response.get("status_code")
+        # Log the full response for debugging
+        st.write("DEBUG - Task Result Response:", response)
+        
+        if not response or not isinstance(response, dict):
+            st.error(f"Invalid response format: {response}")
+            return None
+        
+        # Check the status code
+        status_code = response.get("status_code")
+        
+        if status_code == 20000:
+            # Task is completed successfully
+            tasks = response.get("tasks", [])
+            if not tasks or not isinstance(tasks, list) or len(tasks) == 0:
+                st.error("No tasks found in response")
+                return None
             
-            if status_code == 20000:
-                tasks = response.get("tasks", [])
-                if tasks and len(tasks) > 0:
-                    task = tasks[0]
-                    task_status = task.get("status_code")
-                    
-                    # Check if the task is still in progress
-                    if task_status == 40401:  # DataForSEO task in progress code
-                        return "in_progress"
-                    
-                    # If task is completed successfully
-                    if task_status == 20000:
-                        result = task.get("result", [])
-                        
-                        # Detailed logging for debugging
-                        st.write(f"Raw result structure received for task {task_id}:")
-                        st.json(result)
-                        
-                        # Process results into a simple format
-                        processed_results = []
-                        
-                        if result:
-                            for item in result:
-                                # The correct path for keyword data in the DataForSEO API response
-                                if "items" in item:
-                                    for keyword_data in item.get("items", []):
-                                        keyword = keyword_data.get("keyword")
-                                        search_volume = keyword_data.get("search_volume", 0)
-                                        # Try multiple paths for competition data
-                                        competition = (
-                                            keyword_data.get("competition_index", 0) or 
-                                            keyword_data.get("competition", 0)
-                                        )
-                                        
-                                        processed_results.append({
-                                            "keyword": keyword,
-                                            "search_volume": search_volume,
-                                            "competition": competition,
-                                            "note": ""
-                                        })
-                                else:
-                                    # Some results might have a different structure
-                                    keyword = item.get("keyword")
-                                    if keyword:
-                                        search_volume = item.get("search_volume", 0)
-                                        competition = (
-                                            item.get("competition_index", 0) or 
-                                            item.get("competition", 0)
-                                        )
-                                        
-                                        processed_results.append({
-                                            "keyword": keyword,
-                                            "search_volume": search_volume,
-                                            "competition": competition,
-                                            "note": ""
-                                        })
-                        
-                        return processed_results if processed_results else None
-                    
-                    # If task failed or has other status
-                    st.error(f"Task error: Status {task_status} - {task.get('status_message', 'No message')}")
-                    return None
-            elif status_code == 40602:  # Task not found or no longer available
-                st.error(f"Task not found: {response.get('status_message', 'Task ID not found')}")
+            task = tasks[0]
+            if task.get("status_code") != 20000:
+                task_status = task.get("status_code")
+                task_message = task.get("status_message", "Unknown task error")
+                st.error(f"Task Error {task_status}: {task_message}")
                 return None
-            else:
-                st.error(f"API Error {status_code}: {response.get('status_message', 'Unknown error')}")
-                return None
+            
+            # Get the result from the task
+            result = task.get("result", [])
+            if not result or not isinstance(result, list) or len(result) == 0:
+                st.info(f"No results found for task {task_id}")
+                return []
+            
+            # Extract and format the keyword data
+            keyword_data = []
+            for item in result:
+                # Extract search volume and competition data
+                search_volume = item.get("search_volume", 0)
+                competition = item.get("competition_index", 0)
                 
-        return None
+                keyword_data.append({
+                    "keyword": item.get("keyword", "Unknown"),
+                    "search_volume": search_volume if search_volume is not None else 0,
+                    "competition": competition if competition is not None else 0,
+                    "note": ""
+                })
+            
+            return keyword_data
+            
+        elif status_code == 40401 or status_code == 40501:
+            # Task is still in progress
+            return "in_progress"
+        else:
+            # Task failed or other error
+            status_message = response.get("status_message", "Unknown error")
+            st.error(f"API Error {status_code}: {status_message}")
+            return None
+            
     except Exception as e:
-        st.error(f"Error checking task results: {str(e)}")
+        st.error(f"Error getting task results: {str(e)}")
         return None
 
 def process_keywords(keywords, client, location_code=2840):
@@ -141,7 +127,7 @@ def process_keywords(keywords, client, location_code=2840):
     # Make a direct API call for test purposes to validate the API connection
     try:
         # Make a simple API call to test the connection
-        test_response = client.get("v3/keywords_data/google_ads/search_volume/live", None)
+        test_response = client.get("/v3/keywords_data/google_ads/search_volume/live", None)
         st.write("API Connection Test:")
         st.json(test_response)
     except Exception as e:
