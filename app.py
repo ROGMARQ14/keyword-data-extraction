@@ -273,23 +273,6 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
                     # Update progress
                     completed_batches += 1
                     progress_bar.progress(completed_batches / total_batches)
-                    
-                    # Save partial results to a temporary file after each completed batch
-                    if len(all_results) > 0:
-                        with results_container:
-                            temp_df = pd.DataFrame(all_results)
-                            # Create a download button for partial results
-                            csv = temp_df.to_csv(index=False)
-                            st.download_button(
-                                "⬇️ Download Partial Results",
-                                csv,
-                                "keyword_analysis_partial_results.csv",
-                                "text/csv",
-                                key=f'download-partial-{completed_batches}'
-                            )
-                            # Show a preview of the most recent results
-                            st.write(f"### Preview of results ({len(all_results)} keywords processed so far)")
-                            st.dataframe(temp_df.head(20))  # Show first 20 rows
                 except Exception as e:
                     st.error(f"Error checking task {task_id} for batch {batch_num}: {str(e)}")
                     # If we're on the last attempt, mark this batch as failed
@@ -327,6 +310,12 @@ def process_large_keyword_list(keywords, client, status_container, results_conta
             completed_batches += 1
             progress_bar.progress(completed_batches / total_batches)
     
+    # Display the final results
+    if all_results:
+        display_results(all_results, results_container, len(keywords))
+    else:
+        results_container.warning("No results found for any of the provided keywords.")
+        
     return all_results
 
 def process_keywords(keywords, client, location_code=2840):
@@ -378,6 +367,53 @@ def process_keywords(keywords, client, location_code=2840):
     # If we get here, we didn't get any results after all attempts
     st.error(f"Failed to get results after {max_attempts} attempts")
     return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Timeout or no data"} for k in keywords]
+
+def display_results(results, container, original_keywords_count=None):
+    """
+    Display the results in a DataFrame and provide download options
+    """
+    if not results:
+        container.error("No results to display.")
+        return
+    
+    # Create a DataFrame from the results
+    df = pd.DataFrame(results)
+    
+    # Calculate accurate statistics
+    actual_keywords_count = len(df)
+    keywords_with_data = df[df['search_volume'] > 0].shape[0]
+    keywords_without_data = df[df['search_volume'] == 0].shape[0]
+    
+    if keywords_with_data > 0:
+        avg_search_volume = df[df['search_volume'] > 0]['search_volume'].mean()
+    else:
+        avg_search_volume = 0
+    
+    # Ensure the counts add up to the correct total
+    total_keywords = original_keywords_count if original_keywords_count else len(df)
+    
+    # Create a download button for the full results
+    csv = df.to_csv(index=False)
+    container.download_button(
+        "⬇️ Download Complete Results",
+        csv,
+        "keyword_analysis_results.csv",
+        "text/csv",
+        key='download-results'
+    )
+    
+    # Display summary statistics
+    container.write("## Summary")
+    container.write(f"Total keywords processed: {total_keywords}")
+    container.write(f"Keywords with search volume data: {keywords_with_data} ({keywords_with_data/total_keywords:.1%})")
+    container.write(f"Keywords with no data: {keywords_without_data} ({keywords_without_data/total_keywords:.1%})")
+    
+    if keywords_with_data > 0:
+        container.write(f"Average search volume: {avg_search_volume:.1f}")
+    
+    # Display the full results table
+    container.write("## Results")
+    container.dataframe(df)
 
 def main():
     st.title("Keyword Volume Analysis Tool")
@@ -490,17 +526,7 @@ def main():
                     if results == "in_progress":
                         st.info(f"Task {resume_task_id} is still in progress. Please try again later.")
                     elif results:
-                        df = pd.DataFrame(results)
-                        st.success(f"Retrieved {len(results)} results from task {resume_task_id}")
-                        st.dataframe(df)
-                        csv = df.to_csv(index=False)
-                        st.download_button(
-                            "Download Results",
-                            csv,
-                            "keyword_task_results.csv",
-                            "text/csv",
-                            key='download-task-csv'
-                        )
+                        display_results(results, st)
                     else:
                         st.error(f"No results found for task {resume_task_id}")
             except Exception as e:
@@ -585,6 +611,10 @@ def main():
                         all_results = process_large_keyword_list(
                             keywords, client, status_container, results_container, progress_bar
                         )
+                    if all_results:
+                        display_results(all_results, results_container, len(keywords))
+                    else:
+                        results_container.warning("No results found for any of the provided keywords.")
                 else:
                     # Use the original processing method for smaller lists
                     with st.spinner('Getting search volumes...'):
@@ -602,40 +632,11 @@ def main():
                             results = process_keywords(batch, client)
                             all_results.extend(results)
                             progress_bar.progress((i + len(batch)) / len(keywords))
-                
-                # Process final results (only for non-callback modes)
-                if not use_callbacks and 'all_results' in locals() and all_results:
-                    results_df = pd.DataFrame(all_results)
-                    
-                    with results_container:
-                        st.write("### Results")
-                        st.dataframe(results_df)
                         
-                        csv = results_df.to_csv(index=False)
-                        st.download_button(
-                            "Download Results",
-                            csv,
-                            "keyword_analysis_results.csv",
-                            "text/csv",
-                            key='download-csv'
-                        )
-                        
-                        # Summary statistics
-                        st.write("### Summary")
-                        total_keywords = len(all_results)
-                        keywords_with_data = sum(1 for r in all_results if r.get("search_volume", 0) > 0)
-                        keywords_no_data = total_keywords - keywords_with_data
-                        
-                        st.write(f"Total keywords processed: {total_keywords}")
-                        st.write(f"Keywords with search volume data: {keywords_with_data} ({keywords_with_data/total_keywords*100:.1f}%)")
-                        st.write(f"Keywords with no data: {keywords_no_data} ({keywords_no_data/total_keywords*100:.1f}%)")
-                        
-                        if keywords_with_data > 0:
-                            avg_search_volume = sum(r.get("search_volume", 0) for r in all_results) / keywords_with_data
-                            st.write(f"Average search volume: {avg_search_volume:.1f}")
-                elif not use_callbacks:
-                    st.warning("No results found for any of the provided keywords.")
-                        
+                        if all_results:
+                            display_results(all_results, results_container, len(keywords))
+                        else:
+                            results_container.warning("No results found for any of the provided keywords.")
             except Exception as e:
                 st.error(f"Error processing file: {str(e)}")
                 st.exception(e)  # Show detailed error information
