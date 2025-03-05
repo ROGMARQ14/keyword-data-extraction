@@ -51,97 +51,110 @@ def submit_keywords_task(keywords, client, location_code=2840, postback_url=None
         return None
 
 def get_task_results(task_id, client):
-    """Get the results of a previously submitted task"""
-    if not task_id:
-        return []
-    
+    """Get results for a submitted task"""
     try:
-        # Get task results using the task_get endpoint
+        # Use the task_get endpoint to check task status and get results
         response = client.get(f"v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
-        results = []
         
         if response and isinstance(response, dict):
-            if response.get("status_code") == 20000:
+            status_code = response.get("status_code")
+            
+            if status_code == 20000:
                 tasks = response.get("tasks", [])
-                if tasks and isinstance(tasks, list) and len(tasks) > 0:
+                if tasks and len(tasks) > 0:
                     task = tasks[0]
-                    status = task.get("status_code")
                     
-                    # Check if task is still in progress
-                    if status == 40401:  # Task in progress
+                    # Check if the task is still in progress
+                    if task.get("status_code") == 20100:
                         return "in_progress"
-                        
-                    # Check if task is completed
-                    if status == 20000:
+                    
+                    # If task is completed, extract results
+                    if task.get("status_code") == 20000:
                         result = task.get("result", [])
-                        if isinstance(result, list):
-                            for item in result:
-                                if isinstance(item, dict):
-                                    results.append({
-                                        "keyword": item.get("keyword", ""),
-                                        "search_volume": item.get("search_volume", 0),
-                                        "competition": item.get("competition", 0)
-                                    })
-                    else:
-                        st.warning(f"Task status: {status} - {task.get('status_message', '')}")
-        
-        return results
+                        
+                        # Process results into a simple format
+                        processed_results = []
+                        
+                        for item in result:
+                            items = item.get("items", [])
+                            for keyword_data in items:
+                                keyword = keyword_data.get("keyword")
+                                search_volume = keyword_data.get("search_volume", 0)
+                                competition = keyword_data.get("competition_index", 0)
+                                
+                                processed_results.append({
+                                    "keyword": keyword,
+                                    "search_volume": search_volume,
+                                    "competition": competition,
+                                    "note": ""
+                                })
+                                
+                        return processed_results
+                    
+                    # If no results found
+                    if task.get("status_code") != 20000:
+                        st.error(f"Error in task: {task.get('status_message', 'Unknown error')}")
+                        return None
+            elif status_code == 40602:  # Task not found or no longer available
+                st.error(f"Task not found: {response.get('status_message', 'Task ID not found')}")
+                return None
+            else:
+                st.error(f"API Error {status_code}: {response.get('status_message', 'Unknown error')}")
+                return None
+                
+        return None
     except Exception as e:
-        st.error(f"Error getting task results: {str(e)}")
-        return []
+        st.error(f"Error checking task results: {str(e)}")
+        return None
 
 def process_keywords(keywords, client, location_code=2840):
-    """Process a list of keywords to get search volume data using task-based approach"""
-    # Submit task
-    task_id = submit_keywords_task(keywords, client, location_code)
+    """Process a list of keywords using the DataForSEO API
+    
+    This function submits a task to the API and polls for results.
+    """
+    # Make a direct API call for test purposes to validate the API connection
+    try:
+        # Make a simple API call to test the connection
+        test_response = client.get("v3/keywords_data/google_ads/search_volume/live", None)
+        st.write("API Connection Test:")
+        st.json(test_response)
+    except Exception as e:
+        st.error(f"API Connection Test Failed: {str(e)}")
+    
+    # Submit task with a smaller batch for testing
+    test_keywords = keywords[:5] if len(keywords) > 5 else keywords
+    task_id = submit_keywords_task(test_keywords, client, location_code)
     
     if not task_id:
-        return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Failed to submit task"} 
-                for k in keywords]
+        st.error("Failed to submit task. Please check your credentials and try again.")
+        return []
     
-    st.success(f"Task submitted successfully. Task ID: {task_id}")
+    st.success(f"Test task submitted successfully. Task ID: {task_id}")
     
     # Poll for results
-    max_attempts = 60  # Increased maximum number of attempts
-    poll_interval = 5  # Increased time between checks to reduce API load
-    poll_backoff = 1.5  # Backoff multiplier to gradually increase wait time
-    current_interval = poll_interval
+    max_attempts = 30
+    attempt = 0
     
-    progress_placeholder = st.empty()
-    
-    for attempt in range(max_attempts):
-        # Update the interval with backoff strategy
-        if attempt > 5:  # After 5 attempts, start increasing the interval
-            current_interval = min(30, poll_interval * (poll_backoff ** (attempt - 5)))
-        
-        progress_placeholder.text(f"Task in progress, polling attempt {attempt+1}/{max_attempts}... (waiting {current_interval:.1f}s)")
+    while attempt < max_attempts:
+        attempt += 1
+        st.write(f"Polling for results (attempt {attempt}/{max_attempts})...")
         
         results = get_task_results(task_id, client)
         
-        # If task is still in progress, wait and try again
         if results == "in_progress":
-            time.sleep(current_interval)
+            st.info(f"Task still in progress. Waiting for 5 seconds...")
+            time.sleep(5)
             continue
         
-        # If we have results, return them
         if results:
-            progress_placeholder.empty()
-            # Add keywords that didn't return data
-            processed_keywords = {r["keyword"] for r in results}
-            for keyword in keywords:
-                if keyword not in processed_keywords:
-                    results.append({
-                        "keyword": keyword,
-                        "search_volume": 0,
-                        "competition": 0,
-                        "note": "No data found"
-                    })
+            st.success(f"Received {len(results)} results!")
             return results
+        else:
+            st.error("Failed to get results. Please try again.")
+            return []
     
-    # If we've exhausted our attempts, return error
-    st.error(f"Task did not complete after {max_attempts} polling attempts")
-    return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Task timeout"} 
-            for k in keywords]
+    st.error(f"Task did not complete within {max_attempts} polling attempts.")
+    return []
 
 def process_large_keyword_list(keywords, client, status_container, results_container, progress_bar):
     """Process a large list of keywords efficiently by submitting multiple tasks in parallel
@@ -492,7 +505,7 @@ def main():
                             batch = keywords[i:i + batch_size]
                             batch_num = i // batch_size + 1
                             
-                            st.text(f"Submitting batch {batch_num} ({len(batch)} keywords)...")
+                            st.text(f"Submitting batch {batch_num}/{total_batches} ({len(batch)} keywords)...")
                             
                             # Submit with callback URL
                             task_id = submit_keywords_task(batch, client, postback_url=current_callback_url)
