@@ -3,6 +3,10 @@ import pandas as pd
 from client import RestClient
 import os
 import time
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 def submit_keywords_task(keywords, client, location_code=2840):
     """Submit a task to process a list of keywords to get search volume data"""
@@ -15,7 +19,7 @@ def submit_keywords_task(keywords, client, location_code=2840):
     
     try:
         # Changed endpoint from 'live' to 'task_post'
-        response = client.post("/v3/keywords_data/google_ads/search_volume/task_post", post_data)
+        response = client.post("v3/keywords_data/google_ads/search_volume/task_post", post_data)
         
         if response and isinstance(response, dict):
             if response.get("status_code") == 20000:
@@ -23,8 +27,11 @@ def submit_keywords_task(keywords, client, location_code=2840):
                 if tasks and isinstance(tasks, list) and len(tasks) > 0:
                     task_id = tasks[0].get("id")
                     return task_id
+            else:
+                status_code = response.get("status_code")
+                status_message = response.get("status_message", "Unknown error")
+                st.error(f"API Error {status_code}: {status_message}")
         
-        st.error(f"Failed to submit task: {response.get('status_message', 'Unknown error')}")
         return None
     except Exception as e:
         st.error(f"Error submitting keywords task: {str(e)}")
@@ -37,7 +44,7 @@ def get_task_results(task_id, client):
     
     try:
         # Get task results using the task_get endpoint
-        response = client.get(f"/v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
+        response = client.get(f"v3/keywords_data/google_ads/search_volume/task_get/{task_id}")
         results = []
         
         if response and isinstance(response, dict):
@@ -62,6 +69,8 @@ def get_task_results(task_id, client):
                                         "search_volume": item.get("search_volume", 0),
                                         "competition": item.get("competition", 0)
                                     })
+                    else:
+                        st.warning(f"Task status: {status} - {task.get('status_message', '')}")
         
         return results
     except Exception as e:
@@ -76,6 +85,8 @@ def process_keywords(keywords, client, location_code=2840):
     if not task_id:
         return [{"keyword": k, "search_volume": 0, "competition": 0, "note": "Failed to submit task"} 
                 for k in keywords]
+    
+    st.success(f"Task submitted successfully. Task ID: {task_id}")
     
     # Poll for results
     max_attempts = 30  # Maximum number of attempts to check task status
@@ -114,11 +125,21 @@ def main():
     st.title("Keyword Volume Analysis Tool")
     st.write("Enter your DataForSEO credentials and upload a CSV file containing keywords to analyze their search volumes and competition.")
     
+    # Try to load DataForSEO credentials from environment variables
+    default_login = os.getenv("DATAFORSEO_LOGIN", "")
+    default_password = os.getenv("DATAFORSEO_PASSWORD", "")
+    
     # DataForSEO credentials input
     with st.sidebar:
         st.header("DataForSEO Credentials")
-        dataforseo_login = st.text_input("DataForSEO Login", type="default")
-        dataforseo_password = st.text_input("DataForSEO Password", type="password")
+        dataforseo_login = st.text_input("DataForSEO Login", value=default_login)
+        dataforseo_password = st.text_input("DataForSEO Password", value=default_password, type="password")
+        
+        # Add debug info in sidebar
+        if st.checkbox("Show Debug Info"):
+            st.text("Environment variables loaded:")
+            st.text(f"DATAFORSEO_LOGIN: {'Set' if default_login else 'Not Set'}")
+            st.text(f"DATAFORSEO_PASSWORD: {'Set' if default_password else 'Not Set'}")
     
     # Only show file uploader if credentials are provided
     if dataforseo_login and dataforseo_password:
