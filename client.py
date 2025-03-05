@@ -12,6 +12,7 @@ class RestClient:
         """Initialize the client with username and password"""
         self.username = username
         self.password = password
+        self.base_url = "https://api.dataforseo.com"
 
     def post(self, path, data):
         """Make a POST request to the API"""
@@ -23,7 +24,12 @@ class RestClient:
 
     def request(self, path, data=None, method="GET"):
         """Make a request to the API"""
-        url = "https://api.dataforseo.com/" + path
+        # Ensure path starts with a slash but remove any leading slashes from path to avoid double slashes
+        if not path.startswith('/'):
+            path = '/' + path
+        
+        url = f"{self.base_url}{path}"
+        
         try:
             if method == "POST":
                 response = requests.post(
@@ -43,6 +49,10 @@ class RestClient:
             
             return response.json()
             
+        except requests.exceptions.HTTPError as err:
+            print(f"HTTP Error: {err}")
+            print(f"Response content: {err.response.text}")
+            raise
         except requests.exceptions.RequestException as e:
             print(f"Error making request: {str(e)}")
             raise
